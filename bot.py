@@ -127,4 +127,4 @@ def load_state() -> Dict:
 
 def save_state(state: Dict):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False,_
+        json.dump(state, f, ensure_ascii=False, indent=2)
