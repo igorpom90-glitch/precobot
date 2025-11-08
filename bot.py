@@ -26,7 +26,11 @@ HEADERS = {
     )
 }
 
-PROXIES = None  # ou configure se quiser usar proxy
+# Proxy gratuito que você escolheu
+PROXIES = {
+    "http": "http://157.175.42.134:3902",
+    "https": "http://157.175.42.134:3902"
+}
 
 
 def send_telegram(message: str):
