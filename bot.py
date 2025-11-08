@@ -14,7 +14,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 PRICE_MIN = float(os.environ.get("PRICE_MIN", "550"))
 PRICE_MAX = float(os.environ.get("PRICE_MAX", "600"))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "3600"))  # 1h padrão
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "300"))  # 5 minutos
 STATE_FILE = "state.json"
 
 # Só as duas lojas que funcionaram
@@ -140,11 +140,15 @@ def check_all():
         send_telegram(msg)
     return alerts
 
-# === Função de teste ===
-def test_telegram():
-    send_telegram("✅ Teste do bot funcionando! Se você receber isso, tá tudo certo.")
+def main_loop():
+    logging.info("Iniciando monitor de preços. Intervalo: %s segundos", POLL_INTERVAL)
+    while True:
+        try:
+            alerts = check_all()
+            logging.info("Check concluído. Alerts: %d", len(alerts))
+        except Exception as e:
+            logging.exception("Erro no check_all: %s", e)
+        time.sleep(POLL_INTERVAL)
 
 if __name__ == "__main__":
-    # Teste rápido do Telegram
-    test_telegram()
-    # main_loop()  # descomente quando quiser voltar ao monitoramento real
+    main_loop()
