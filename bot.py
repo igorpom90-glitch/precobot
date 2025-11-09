@@ -1,139 +1,122 @@
-# bot.py
-import os
-import time
-import json
-import re
-import logging
 import requests
 from bs4 import BeautifulSoup
-from typing import Optional, Dict
+import time
+import os
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# ======================= CONFIGURAÇÕES DO BOT =======================
 
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("CHAT_ID")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # Agora 15 minutos
-STATE_FILE = "state.json"
+CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 
-URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
+# Intervalo entre verificações (15 minutos)
+CHECK_INTERVAL = 15 * 60  # 15 minutos em segundos
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1"
-    )
-}
+# Faixa de preço desejada
+MIN_PRICE = 550.00
+MAX_PRICE = 600.00
 
-# Se quiser ativar proxy, ajuste aqui:
-PROXIES = None
-# Exemplo:
-# PROXIES = {
-#     "http": "http://user:pass@157.175.42.134:3902",
-#     "https": "http://user:pass@157.175.42.134:3902"
-# }
+# Lojas para monitorar
+URLS = [
+    {
+        "store": "KaBuM!",
+        "url": "https://www.kabum.com.br/produto/100672/placa-mae-asrock-b450m-steel-legend-amd-am4-matx-ddr4-preto-b450m-steel-legend"
+    },
+    {
+        "store": "Amazon BR",
+        "url": "https://www.amazon.com.br/s?k=asrock+b450m+steel+legend"
+    },
+    {
+        "store": "Mercado Livre",
+        "url": "https://lista.mercadolivre.com.br/asrock-b450m-steel-legend"
+    },
+    {
+        "store": "TechDreamStore",
+        "url": "https://www.techdreamstore.com.br/placa-mae-asrock-b450m-steel-legend-am4-matx-ddr4-90-mxb9y0-a0uayz"
+    }
+]
 
 
-def send_telegram(message: str):
-    if not TELEGRAM_TOKEN or not CHAT_ID:
-        logging.error("TELEGRAM_TOKEN ou CHAT_ID não configurados.")
-        return
+# ======================= FUNÇÕES DO BOT =======================
+
+def send_telegram_message(text):
+    """Envia mensagem para o Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
-    try:
-        r = requests.post(url, json=payload, timeout=15)
-        r.raise_for_status()
-        logging.info("Mensagem enviada ao Telegram.")
-    except Exception as e:
-        logging.exception("Erro ao enviar mensagem Telegram: %s", e)
+    payload = {"chat_id": CHAT_ID, "text": text}
+    requests.post(url, data=payload)
 
 
-def extract_price_from_text(text: str) -> Optional[float]:
-    patterns = [
-        r"R\$\s*([0-9\.\,]{1,})",
-        r"([0-9\.\,]{1,})\s*R\$",
-    ]
-    for p in patterns:
-        m = re.search(p, text)
-        if m:
-            raw = m.group(1)
-            num = raw.replace('.', '').replace(',', '.')
-            try:
-                return float(num)
-            except:
-                continue
-    m = re.search(r"([0-9]{2,}\,[0-9]{2})", text)
-    if m:
-        try:
-            return float(m.group(1).replace('.', '').replace(',', '.'))
-        except:
-            pass
+def get_price(store, url):
+    """Obtém o preço de uma página dependendo da loja."""
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+    }
+
+    html = requests.get(url, headers=headers, timeout=10).text
+    soup = BeautifulSoup(html, "html.parser")
+
+    price = None
+
+    if store == "KaBuM!":
+        price_tag = soup.select_one(".finalPrice")
+        if price_tag:
+            price = price_tag.text.strip()
+
+    elif store == "Amazon BR":
+        price_tag = soup.select_one(".a-price-whole")
+        if price_tag:
+            price = price_tag.text.strip() + ",00"
+
+    elif store == "Mercado Livre":
+        price_tag = soup.select_one(".ui-search-price__second-line .price-tag-fraction")
+        if price_tag:
+            price = price_tag.text.strip() + ",00"
+
+    elif store == "TechDreamStore":
+        price_tag = soup.select_one(".sale-price")
+        if price_tag:
+            price = price_tag.text.strip()
+
+    if price:
+        price = (
+            price.replace("R$", "")
+            .replace(".", "")
+            .replace(",", ".")
+            .strip()
+        )
+        return float(price)
+
     return None
 
 
-def fetch_price(url: str) -> Optional[float]:
-    try:
-        if PROXIES:
-            r = requests.get(url, headers=HEADERS, timeout=20, proxies=PROXIES)
-        else:
-            r = requests.get(url, headers=HEADERS, timeout=20)
-        r.raise_for_status()
+# ======================= LOOP PRINCIPAL =======================
 
-        html = r.text
+send_telegram_message("🔍 Monitor de preços iniciado com sucesso!")
 
-        price = extract_price_from_text(html)
-        if price:
-            return price
+while True:
+    for item in URLS:
+        store = item["store"]
+        url = item["url"]
 
-        soup = BeautifulSoup(html, "html.parser")
-        selectors = [
-            "span.price", ".price", ".product-price", ".price-tag",
-            ".valor", ".preco", ".price-wrapper"
-        ]
-        for sel in selectors:
-            el = soup.select_one(sel)
-            if el:
-                p = extract_price_from_text(el.get_text(strip=True))
-                if p:
-                    return p
-
-    except Exception as e:
-        logging.warning("Erro ao buscar preço em %s: %s", url, e)
-    return None
-
-
-def load_state() -> Dict:
-    if os.path.exists(STATE_FILE):
         try:
-            with open(STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+            price = get_price(store, url)
+
+            if price is not None:
+                if MIN_PRICE <= price <= MAX_PRICE:
+                    send_telegram_message(
+                        f"🔥 *ALERTA DE PREÇO*\n\n"
+                        f"Lojá: {store}\n"
+                        f"💰 Preço: R$ {price:.2f}\n"
+                        f"🔗 {url}"
+                    )
+                else:
+                    print(f"{store}: preço fora da faixa → R$ {price:.2f}")
+
+            else:
+                print(f"{store}: não foi possível achar preço.")
+
         except:
-            return {}
-    return {}
+            print(f"Erro ao verificar {store}")
 
-
-def save_state(state: Dict):
-    with open(STATE_FILE, "w", encoding="utf-8") as f:
-        json.dump(state, f, ensure_ascii=False, indent=2)
-
-
-def main_loop():
-    state = load_state()
-    logging.info("Iniciando monitor de preços. Intervalo: %s segundos", POLL_INTERVAL)
-
-    while True:
-        alerts = 0
-        for url in URLS:
-            store_name = url.split("/")[2]
-            price = fetch_price(url)
-            state[url] = price
-            save_state(state)
-
-            send_telegram(f"Preço atual em {store_name}: R$ {price if price else '??'}\n{url}")
-            alerts += 1
-
-        logging.info("Check concluído. Alerts: %s", alerts)
-        time.sleep(POLL_INTERVAL)
-
-
-if __name__ == "__main__":
-    main_loop()
+    print("Aguardando próxima verificação...\n")
+    time.sleep(CHECK_INTERVAL)
