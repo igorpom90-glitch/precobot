@@ -15,9 +15,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
-PRICE_MIN = float(os.environ.get("PRICE_MIN", "550"))
-PRICE_MAX = float(os.environ.get("PRICE_MAX", "600"))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # 900 = 15 min
+PRICE_MIN = 300.0
+PRICE_MAX = 600.0
+ACTIVE_INTERVAL = 300  # 5 minutos em segundos
+CHECK_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # Intervalo de checagem de preços
 
 URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
 
@@ -40,7 +41,6 @@ def send_telegram(message: str):
     except Exception as e:
         logging.error(f"Erro ao enviar Telegram: {e}")
 
-
 def fetch_price(url: str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
@@ -53,7 +53,6 @@ def fetch_price(url: str):
         logging.error(f"Erro ao buscar preço de {url}: {e}")
     return None
 
-
 def load_state():
     if os.path.exists(STATE_FILE):
         try:
@@ -63,75 +62,42 @@ def load_state():
             pass
     return {}
 
-
 def save_state(state):
     with open(STATE_FILE, "w", encoding="utf-8") as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
 
-
-# ---------- Função separada para atualizar preços ----------
-def atualizar_precos(state):
-    mensagem_resumo = "🕒 Atualização automática:\n"
-
-    for loja in URLS:
-        nome = loja.get("name", "Loja desconhecida")
-        url = loja.get("url", "")
-        price = fetch_price(url)
-
-        if price is None:
-            mensagem_resumo += f"{nome}: preço não encontrado ❌\n"
-            continue
-
-        mensagem_resumo += f"{nome}: R$ {price:.2f}\n"
-
-        last_price = state.get(nome)
-
-        if last_price != price:
-            state[nome] = price
-            save_state(state)
-            send_telegram(f"🔔 <b>Preço atualizado!</b>\n\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
-
-        if PRICE_MIN <= price <= PRICE_MAX:
-            send_telegram(f"✅ <b>Preço dentro da faixa!</b>\n\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
-
-    logging.info(mensagem_resumo)
-
-
-# ---------------------- Loop de monitoramento -----------------------
+# ---------------------- MONITOR -----------------------
 def monitor():
     state = load_state()
     logging.info("Loop de monitoramento iniciado.")
+    last_active = 0
 
-    # ---------- Primeira atualização imediata ----------
-    logging.info("Primeira atualização imediata do monitor.")
-    atualizar_precos(state)
-
-    # ---------- Loop contínuo ----------
     while True:
-        time.sleep(POLL_INTERVAL)
-        atualizar_precos(state)
+        now = time.time()
+        # ---------- Mensagem de "ainda estou ativo" ----------
+        if now - last_active >= ACTIVE_INTERVAL:
+            send_telegram("🤖 Ainda estou ativo e monitorando preços...")
+            last_active = now
 
+        # ---------- Checagem de preços ----------
+        for loja in URLS:
+            nome = loja.get("name", "Loja desconhecida")
+            url = loja.get("url", "")
+            price = fetch_price(url)
 
-# ---------------------- SERVIDOR WEB -----------------------
-app = Flask(__name__)
+            if price is None:
+                continue
 
-@app.route("/")
-def home():
-    return "Bot rodando ✅"
+            last_price = state.get(nome)
 
+            # ---------- Mensagem se preço mudou ----------
+            if last_price != price:
+                state[nome] = price
+                save_state(state)
+                send_telegram(f"🔔 Preço atualizado!\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-def start_web():
-    port = int(os.environ.get("PORT", 8080))
-    logging.info(f"Flask rodando na porta {port}")
-    app.run(host="0.0.0.0", port=port)
+            # ---------- Mensagem se preço estiver na faixa ----------
+            if PRICE_MIN <= price <= PRICE_MAX:
+                send_telegram(f"✅ Achei produto dentro da faixa!\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-
-# ---------------------- MAIN -----------------------
-if __name__ == "__main__":
-    send_telegram("🤖 Bot iniciado. Monitorando preços a cada 15 minutos.")
-    
-    # Inicia monitoramento em thread separada
-    threading.Thread(target=monitor, daemon=True).start()
-    
-    # Inicia Flask
-    start_web()
+        time.sleep(5)  # Checagem rápida para não perder o ACTIVE_INTERVAL
