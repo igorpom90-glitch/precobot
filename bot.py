@@ -17,8 +17,8 @@ CHAT_ID = os.environ.get("CHAT_ID")
 
 PRICE_MIN = 300.0
 PRICE_MAX = 600.0
-ACTIVE_INTERVAL = 300  # 5 minutos em segundos
-CHECK_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # Intervalo de checagem de preços
+ACTIVE_INTERVAL = 300  # 5 minutos
+CHECK_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))
 
 URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
 
@@ -100,4 +100,26 @@ def monitor():
             if PRICE_MIN <= price <= PRICE_MAX:
                 send_telegram(f"✅ Achei produto dentro da faixa!\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-        time.sleep(5)  # Checagem rápida para não perder o ACTIVE_INTERVAL
+        time.sleep(5)  # loop rápido para não perder o ACTIVE_INTERVAL
+
+# ---------------------- SERVIDOR WEB -----------------------
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot rodando ✅"
+
+def start_web():
+    port = int(os.environ.get("PORT", 8080))
+    logging.info(f"Flask rodando na porta {port}")
+    app.run(host="0.0.0.0", port=port)
+
+# ---------------------- MAIN -----------------------
+if __name__ == "__main__":
+    send_telegram("🤖 Bot iniciado. Monitorando preços e enviando sinal de atividade a cada 5 minutos.")
+    
+    # Inicia monitoramento em thread separada
+    threading.Thread(target=monitor, daemon=True).start()
+    
+    # Inicia Flask
+    start_web()
