@@ -1,122 +1,90 @@
+import os
+import time
 import requests
 from bs4 import BeautifulSoup
-import time
-import os
+import json
+import logging
 
-# ======================= CONFIGURAÇÕES DO BOT =======================
+# Configuração do log
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+# Variáveis de ambiente do Railway
+KABUM_URL = os.getenv("KABUM_URL")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+TARGET_PRICE_LOW = float(os.getenv("TARGET_PRICE_LOW", "0"))
+TARGET_PRICE_HIGH = float(os.getenv("TARGET_PRICE_HIGH", "99999"))
+CHECK_INTERVAL = int(os.getenv("CHECK_INTERVAL", "900"))  # 900 = 15 minutos
 
-# Intervalo entre verificações (15 minutos)
-CHECK_INTERVAL = 15 * 60  # 15 minutos em segundos
+STATE_FILE = "state.json"
 
-# Faixa de preço desejada
-MIN_PRICE = 550.00
-MAX_PRICE = 600.00
+def load_state():
+    if os.path.exists(STATE_FILE):
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"last_price": None}
 
-# Lojas para monitorar
-URLS = [
-    {
-        "store": "KaBuM!",
-        "url": "https://www.kabum.com.br/produto/100672/placa-mae-asrock-b450m-steel-legend-amd-am4-matx-ddr4-preto-b450m-steel-legend"
-    },
-    {
-        "store": "Amazon BR",
-        "url": "https://www.amazon.com.br/s?k=asrock+b450m+steel+legend"
-    },
-    {
-        "store": "Mercado Livre",
-        "url": "https://lista.mercadolivre.com.br/asrock-b450m-steel-legend"
-    },
-    {
-        "store": "TechDreamStore",
-        "url": "https://www.techdreamstore.com.br/placa-mae-asrock-b450m-steel-legend-am4-matx-ddr4-90-mxb9y0-a0uayz"
-    }
-]
+def save_state(state):
+    with open(STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=4)
 
-
-# ======================= FUNÇÕES DO BOT =======================
-
-def send_telegram_message(text):
-    """Envia mensagem para o Telegram."""
+def send_message(msg):
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    requests.post(url, data=payload)
+    data = {"chat_id": TELEGRAM_CHAT_ID, "text": msg}
+    try:
+        requests.post(url, data=data, timeout=10)
+    except:
+        pass
 
+def get_price_kabum(url):
+    try:
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        r = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(r.text, "html.parser")
 
-def get_price(store, url):
-    """Obtém o preço de uma página dependendo da loja."""
+        # Novos seletores da Kabum
+        price_element = soup.select_one("h4.final-price") or soup.select_one("span.price__current")
+        if not price_element:
+            logging.info("Kabum: não encontrou seletor de preço.")
+            return None
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-    }
-
-    html = requests.get(url, headers=headers, timeout=10).text
-    soup = BeautifulSoup(html, "html.parser")
-
-    price = None
-
-    if store == "KaBuM!":
-        price_tag = soup.select_one(".finalPrice")
-        if price_tag:
-            price = price_tag.text.strip()
-
-    elif store == "Amazon BR":
-        price_tag = soup.select_one(".a-price-whole")
-        if price_tag:
-            price = price_tag.text.strip() + ",00"
-
-    elif store == "Mercado Livre":
-        price_tag = soup.select_one(".ui-search-price__second-line .price-tag-fraction")
-        if price_tag:
-            price = price_tag.text.strip() + ",00"
-
-    elif store == "TechDreamStore":
-        price_tag = soup.select_one(".sale-price")
-        if price_tag:
-            price = price_tag.text.strip()
-
-    if price:
-        price = (
-            price.replace("R$", "")
-            .replace(".", "")
-            .replace(",", ".")
-            .strip()
-        )
+        price = price_element.get_text().strip()
+        price = price.replace("R$", "").replace(".", "").replace(",", ".")
         return float(price)
 
-    return None
+    except Exception as e:
+        logging.warning(f"Erro ao verificar Kabum: {e}")
+        return None
 
+def main():
+    state = load_state()
+    logging.info("Iniciando monitoramento...")
 
-# ======================= LOOP PRINCIPAL =======================
+    while True:
+        price = get_price_kabum(KABUM_URL)
 
-send_telegram_message("🔍 Monitor de preços iniciado com sucesso!")
+        if price:
+            logging.info(f"Kabum: preço atual R$ {price:.2f}")
 
-while True:
-    for item in URLS:
-        store = item["store"]
-        url = item["url"]
+            if TARGET_PRICE_LOW <= price <= TARGET_PRICE_HIGH:
+                msg = (
+                    f"🎯 *ALERTA DE PREÇO*\n\n"
+                    f"LojA: Kabum\n"
+                    f"💲 Preço: R$ {price:.2f}\n"
+                    f"🔗 {KABUM_URL}"
+                )
+                send_message(msg)
 
-        try:
-            price = get_price(store, url)
+            state["last_price"] = price
+            save_state(state)
 
-            if price is not None:
-                if MIN_PRICE <= price <= MAX_PRICE:
-                    send_telegram_message(
-                        f"🔥 *ALERTA DE PREÇO*\n\n"
-                        f"Lojá: {store}\n"
-                        f"💰 Preço: R$ {price:.2f}\n"
-                        f"🔗 {url}"
-                    )
-                else:
-                    print(f"{store}: preço fora da faixa → R$ {price:.2f}")
+        else:
+            logging.info("Kabum: não foi possível achar preço.")
 
-            else:
-                print(f"{store}: não foi possível achar preço.")
+        logging.info(f"Aguardando {CHECK_INTERVAL} segundos...\n")
+        time.sleep(CHECK_INTERVAL)
 
-        except:
-            print(f"Erro ao verificar {store}")
-
-    print("Aguardando próxima verificação...\n")
-    time.sleep(CHECK_INTERVAL)
+if __name__ == "__main__":
+    main()
