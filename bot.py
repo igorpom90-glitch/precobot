@@ -5,9 +5,10 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
-from flask import Flask  # ✅ Servidor web para manter o Railway ativo
-import threading        # ✅ Para rodar Flask e monitor juntos
+from flask import Flask
+import threading
 
+# ---------------------- LOG -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
 # ---------------------- CONFIG -----------------------
@@ -36,22 +37,21 @@ def send_telegram(message: str):
     payload = {"chat_id": CHAT_ID, "text": message, "parse_mode": "HTML"}
     try:
         requests.post(url, json=payload, timeout=15)
-    except:
-        pass
+    except Exception as e:
+        logging.error(f"Erro ao enviar Telegram: {e}")
 
 
 def fetch_price(url: str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
         r.raise_for_status()
-
         text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
         prices = re.findall(r"R\$\s*([0-9\.\,]+)", text)
-
         if prices:
             return float(prices[0].replace(".", "").replace(",", "."))
-    except:
-        return None
+    except Exception as e:
+        logging.error(f"Erro ao buscar preço de {url}: {e}")
+    return None
 
 
 def load_state():
@@ -71,13 +71,13 @@ def save_state(state):
 
 def monitor():
     state = load_state()
-
+    logging.info("Loop de monitoramento iniciado.")
     while True:
         mensagem_resumo = "🕒 Atualização automática:\n"
 
         for loja in URLS:
-            nome = loja["name"]
-            url = loja["url"]
+            nome = loja.get("name", "Loja desconhecida")
+            url = loja.get("url", "")
             price = fetch_price(url)
 
             if price is None:
@@ -96,23 +96,30 @@ def monitor():
             if PRICE_MIN <= price <= PRICE_MAX:
                 send_telegram(f"✅ <b>Preço dentro da faixa!</b>\n\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-        send_telegram(mensagem_resumo)
+        logging.info(mensagem_resumo)
         time.sleep(POLL_INTERVAL)
 
 
-# ---------------------- SERVIDOR WEB KEEPALIVE -----------------------
+# ---------------------- SERVIDOR WEB -----------------------
 app = Flask(__name__)
 
 @app.route("/")
 def home():
     return "Bot rodando ✅"
 
+
 def start_web():
-    port = int(os.environ.get("PORT", 8080))  # ✅ Porta usada pelo Railway
+    port = int(os.environ.get("PORT", 8080))
+    logging.info(f"Flask rodando na porta {port}")
     app.run(host="0.0.0.0", port=port)
 
 
 # ---------------------- MAIN -----------------------
 if __name__ == "__main__":
     send_telegram("🤖 Bot iniciado. Monitorando preços a cada 15 minutos.")
-    threading.Thread(target=start_web).start()  # ✅ Mantém o bot_
+    
+    # Inicia monitoramento em thread separada
+    threading.Thread(target=monitor, daemon=True).start()
+    
+    # Inicia Flask
+    start_web()
