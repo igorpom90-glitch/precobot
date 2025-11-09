@@ -5,15 +5,18 @@ import re
 import logging
 import requests
 from bs4 import BeautifulSoup
+from flask import Flask  # ✅ Servidor web para manter o Railway ativo
+import threading        # ✅ Para rodar Flask e monitor juntos
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+# ---------------------- CONFIG -----------------------
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 CHAT_ID = os.environ.get("CHAT_ID")
 
 PRICE_MIN = float(os.environ.get("PRICE_MIN", "550"))
 PRICE_MAX = float(os.environ.get("PRICE_MAX", "600"))
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # 900 = 15 minutos
+POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "900"))  # 900 = 15 min
 
 URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
 
@@ -24,6 +27,7 @@ HEADERS = {
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1"
 }
 
+# ---------------------- FUNÇÕES -----------------------
 def send_telegram(message: str):
     if not TELEGRAM_TOKEN or not CHAT_ID:
         logging.error("TELEGRAM_TOKEN ou CHAT_ID não configurados.")
@@ -40,17 +44,12 @@ def fetch_price(url: str):
     try:
         r = requests.get(url, headers=HEADERS, timeout=20)
         r.raise_for_status()
-        html = r.text
 
-        soup = BeautifulSoup(html, "html.parser")
-        symbols = ["R$", "€", "$"]
-
-        text = soup.get_text(" ", strip=True)
+        text = BeautifulSoup(r.text, "html.parser").get_text(" ", strip=True)
         prices = re.findall(r"R\$\s*([0-9\.\,]+)", text)
 
         if prices:
-            p = prices[0].replace(".", "").replace(",", ".")
-            return float(p)
+            return float(prices[0].replace(".", "").replace(",", "."))
     except:
         return None
 
@@ -79,7 +78,6 @@ def monitor():
         for loja in URLS:
             nome = loja["name"]
             url = loja["url"]
-
             price = fetch_price(url)
 
             if price is None:
@@ -93,23 +91,28 @@ def monitor():
             if last_price != price:
                 state[nome] = price
                 save_state(state)
-                send_telegram(
-                    f"🔔 <b>Preço atualizado!</b>\n\n"
-                    f"🏪 Loja: {nome}\n"
-                    f"💰 Preço: R$ {price:.2f}\n\n{url}"
-                )
+                send_telegram(f"🔔 <b>Preço atualizado!</b>\n\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
             if PRICE_MIN <= price <= PRICE_MAX:
-                send_telegram(
-                    f"✅ <b>Preço dentro da faixa!</b>\n\n"
-                    f"🏪 Loja: {nome}\n"
-                    f"💰 Preço: R$ {price:.2f}\n\n{url}"
-                )
+                send_telegram(f"✅ <b>Preço dentro da faixa!</b>\n\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-        send_telegram(mensagem_resumo)  # ✅ manda mensagem mesmo sem mudança
+        send_telegram(mensagem_resumo)
         time.sleep(POLL_INTERVAL)
 
 
+# ---------------------- SERVIDOR WEB KEEPALIVE -----------------------
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Bot rodando ✅"
+
+def start_web():
+    port = int(os.environ.get("PORT", 8080))  # ✅ Porta usada pelo Railway
+    app.run(host="0.0.0.0", port=port)
+
+
+# ---------------------- MAIN -----------------------
 if __name__ == "__main__":
-    send_telegram("🤖 Bot iniciado e monitorando preços a cada 15 minutos.")
-    monitor()
+    send_telegram("🤖 Bot iniciado. Monitorando preços a cada 15 minutos.")
+    threading.Thread(target=start_web).start()  # ✅ Mantém o bot_
