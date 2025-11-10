@@ -7,7 +7,7 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 # ---------------------- LOG -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -19,16 +19,16 @@ CHAT_ID = os.environ.get("CHAT_ID")
 PRICE_MIN = 300.0
 PRICE_MAX = 600.0
 ACTIVE_INTERVAL = 600  # 10 minutos
-CHECK_INTERVAL = 300   # checagem rápida para não perder a hora
-
 URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
-
 STATE_FILE = "state_motherboard.json"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1"
 }
+
+# Fuso horário de Campos dos Goytacazes
+BR_TZ = timezone(timedelta(hours=-3))
 
 # ---------------------- FUNÇÕES -----------------------
 def send_telegram(message: str):
@@ -70,47 +70,34 @@ def save_state(state):
 # ---------------------- MONITOR -----------------------
 def monitor():
     state = load_state()
-    logging.info("Loop de monitoramento da placa mãe iniciado.")
-    last_active = 0
-    sent_day_message = False
+    logging.info("Loop de monitoramento iniciado.")
 
     while True:
-        now = datetime.now()
+        now = datetime.now(BR_TZ)
         current_time_str = now.strftime("%H:%M:%S")
+        message_base = f"🤖 Ainda estou ativo - {current_time_str}"
 
-        # ---------- Mensagem de início do dia ----------
-        if not sent_day_message and now.hour == 0 and now.minute == 0:
-            send_telegram(f"🤖 Dia {now.strftime('%d/%m/%Y')} - {current_time_str}, irei começar a mandar os updates que ainda estou vivo de 10 em 10 minutos")
-            sent_day_message = True
-        if now.hour != 0 or now.minute != 0:
-            sent_day_message = False
-
-        # ---------- Mensagem de "ainda estou ativo" ----------
-        if (time.time() - last_active) >= ACTIVE_INTERVAL:
-            send_telegram(f"🤖 Ainda estou ativo - {current_time_str}, monitorando preços da placa mãe...")
-            last_active = time.time()
-
-        # ---------- Checagem de preços ----------
-        achados = []
+        encontrados = []
         for loja in URLS:
             nome = loja.get("name", "Loja desconhecida")
             url = loja.get("url", "")
             price = fetch_price(url)
-
             if price is None:
                 continue
-
             if PRICE_MIN <= price <= PRICE_MAX:
-                achados.append((nome, price, url))
+                encontrados.append(f"🏪 {nome} - R$ {price:.2f}\n{url}")
+                state[nome] = price
 
-        if achados:
-            for nome, price, url in achados:
-                send_telegram(f"✅ Achei placa mãe dentro da faixa!\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
+        save_state(state)
+
+        # ---------- Mensagem final ----------
+        if encontrados:
+            for item in encontrados:
+                send_telegram(f"{message_base}\n✅ Achei promoção da placa-mãe!\n{item}")
         else:
-            # Apenas uma mensagem se não encontrou nada
-            send_telegram(f"🤖 Ainda estou ativo - {current_time_str}, promoção não encontrada em nenhuma loja")
+            send_telegram(f"{message_base}, promoção da placa-mãe não encontrada em nenhuma loja ❌")
 
-        time.sleep(5)
+        time.sleep(ACTIVE_INTERVAL)
 
 # ---------------------- SERVIDOR WEB -----------------------
 app = Flask(__name__)
@@ -126,8 +113,6 @@ def start_web():
 
 # ---------------------- MAIN -----------------------
 if __name__ == "__main__":
-    send_telegram(f"🤖 Bot da placa mãe iniciado. Monitorando preços e enviando sinal de atividade a cada 10 minutos - {datetime.now().strftime('%H:%M:%S')}")
-    
+    send_telegram("🤖 Bot da placa-mãe iniciado. Mensagens de status a cada 10 minutos.")
     threading.Thread(target=monitor, daemon=True).start()
-    
     start_web()
