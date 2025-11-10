@@ -7,7 +7,8 @@ import requests
 from bs4 import BeautifulSoup
 from flask import Flask
 import threading
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+import pytz
 
 # ---------------------- LOG -----------------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -18,17 +19,18 @@ CHAT_ID = os.environ.get("CHAT_ID")
 
 PRICE_MIN = 300.0
 PRICE_MAX = 600.0
-ACTIVE_INTERVAL = 600  # 10 minutos
-URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
+CHECK_INTERVAL = 300  # Checa a cada 5 minutos
+ACTIVE_INTERVAL = 600  # Mensagem de "ainda ativo" a cada 10 minutos
 STATE_FILE = "state_motherboard.json"
+
+URLS = json.loads(os.environ.get("PRODUCT_URLS_JSON", "[]"))
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 14_0 like Mac OS X) "
                   "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Mobile/15A372 Safari/604.1"
 }
 
-# Fuso horário de Campos dos Goytacazes
-BR_TZ = timezone(timedelta(hours=-3))
+TIMEZONE = pytz.timezone("America/Sao_Paulo")
 
 # ---------------------- FUNÇÕES -----------------------
 def send_telegram(message: str):
@@ -70,34 +72,49 @@ def save_state(state):
 # ---------------------- MONITOR -----------------------
 def monitor():
     state = load_state()
-    logging.info("Loop de monitoramento iniciado.")
+    last_active = 0
+    last_day = None
 
     while True:
-        now = datetime.now(BR_TZ)
-        current_time_str = now.strftime("%H:%M:%S")
-        message_base = f"🤖 Ainda estou ativo - {current_time_str}"
+        now = datetime.now(TIMEZONE)
+        current_day = now.date()
+        current_time = now.strftime("%H:%M:%S")
 
-        encontrados = []
+        # ---------- Mensagem de início do dia ----------
+        if last_day != current_day:
+            last_day = current_day
+            send_telegram(f"🤖 Dia {now.strftime('%d/%m/%Y')} - 00:00:00, começando updates de monitoramento de preços de 10 em 10 minutos.")
+
+        # ---------- Mensagem de "ainda ativo" ----------
+        if time.time() - last_active >= ACTIVE_INTERVAL:
+            send_telegram(f"🤖 Ainda estou ativo - {current_time}, verificando preços de placas-mãe...")
+            last_active = time.time()
+
+        # ---------- Checagem de preços ----------
+        promotions_found = False
         for loja in URLS:
             nome = loja.get("name", "Loja desconhecida")
             url = loja.get("url", "")
             price = fetch_price(url)
+
             if price is None:
                 continue
-            if PRICE_MIN <= price <= PRICE_MAX:
-                encontrados.append(f"🏪 {nome} - R$ {price:.2f}\n{url}")
+
+            last_price = state.get(nome)
+
+            if last_price != price:
                 state[nome] = price
+                save_state(state)
+                send_telegram(f"🔔 Preço atualizado!\n🏪 {nome}\n💰 R$ {price:.2f}\n{url}")
 
-        save_state(state)
+            if PRICE_MIN <= price <= PRICE_MAX:
+                send_telegram(f"✅ Achei placa-mãe a preço {price:.2f} na loja {nome}\n{url}")
+                promotions_found = True
 
-        # ---------- Mensagem final ----------
-        if encontrados:
-            for item in encontrados:
-                send_telegram(f"{message_base}\n✅ Achei promoção da placa-mãe!\n{item}")
-        else:
-            send_telegram(f"{message_base}, promoção da placa-mãe não encontrada em nenhuma loja ❌")
+        if not promotions_found:
+            send_telegram(f"🤖 Ainda estou ativo - {current_time}, promoção da placa-mãe não encontrada em nenhuma loja.")
 
-        time.sleep(ACTIVE_INTERVAL)
+        time.sleep(CHECK_INTERVAL)
 
 # ---------------------- SERVIDOR WEB -----------------------
 app = Flask(__name__)
@@ -113,6 +130,6 @@ def start_web():
 
 # ---------------------- MAIN -----------------------
 if __name__ == "__main__":
-    send_telegram("🤖 Bot da placa-mãe iniciado. Mensagens de status a cada 10 minutos.")
+    send_telegram("🤖 Bot de placas-mãe iniciado. Monitorando preços e enviando atualizações a cada 10 minutos.")
     threading.Thread(target=monitor, daemon=True).start()
     start_web()
